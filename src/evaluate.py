@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 import torch
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from sklearn.metrics import (
@@ -16,6 +17,14 @@ from model import load_detector
 
 MAX_LENGTH = 768
 RESULTS_DIR = "results"
+
+
+def get_device():
+    if torch.cuda.is_available():
+        return "cuda"
+    if torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 class BaseDetector(ABC):
@@ -30,7 +39,7 @@ class OurDetector(BaseDetector):
 
     def predict(self, texts):
         scores = []
-        for text in texts:
+        for text in tqdm(texts, desc="Ours"):
             inputs = self.tokenizer(
                 text, return_tensors="pt", truncation=True,
                 max_length=MAX_LENGTH, padding=True,
@@ -46,12 +55,12 @@ class GLTRDetector(BaseDetector):
         self.tokenizer = AutoTokenizer.from_pretrained("openai-community/gpt2")
         self.lm = AutoModelForCausalLM.from_pretrained("openai-community/gpt2")
         self.lm.eval()
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = get_device()
         self.lm.to(self.device)
 
     def predict(self, texts):
         scores = []
-        for text in texts:
+        for text in tqdm(texts, desc="GLTR"):
             inputs = self.tokenizer(
                 text, return_tensors="pt", truncation=True, max_length=1024,
             ).to(self.device)
@@ -77,15 +86,16 @@ class GLTRDetector(BaseDetector):
 class RADARDetector(BaseDetector):
     def __init__(self):
         from transformers import pipeline
+        dev = get_device()
         self.paraphrase = pipeline(
             "text2text-generation",
             model="Vamsi/T5_Paraphrase_Paws",
-            device=0 if torch.cuda.is_available() else -1,
+            device=dev,
         )
         self.tokenizer = AutoTokenizer.from_pretrained("openai-community/gpt2")
         self.lm = AutoModelForCausalLM.from_pretrained("openai-community/gpt2")
         self.lm.eval()
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = dev
         self.lm.to(self.device)
 
     def log_likelihood(self, text):
@@ -102,7 +112,7 @@ class RADARDetector(BaseDetector):
 
     def predict(self, texts):
         scores = []
-        for text in texts:
+        for text in tqdm(texts, desc="RADAR"):
             original_ll = self.log_likelihood(text)
             paraphrased = self.paraphrase(
                 f"paraphrase: {text[:512]}", max_length=512, num_return_sequences=1,
@@ -118,7 +128,7 @@ class FastDetectGPTDetector(BaseDetector):
         self.tokenizer = AutoTokenizer.from_pretrained("openai-community/gpt2")
         self.lm = AutoModelForCausalLM.from_pretrained("openai-community/gpt2")
         self.lm.eval()
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = get_device()
         self.lm.to(self.device)
         self.num_perturbations = num_perturbations
 
@@ -136,7 +146,7 @@ class FastDetectGPTDetector(BaseDetector):
 
     def predict(self, texts):
         scores = []
-        for text in texts:
+        for text in tqdm(texts, desc="Fast-DetectGPT"):
             token_lp, logits, target_ids = self.token_log_probs(text)
             original_mean = token_lp.mean().item()
 
@@ -164,7 +174,7 @@ class LLMDetDetector(BaseDetector):
             "EleutherAI/pythia-160m",
         ]
         self.models = []
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = get_device()
         for name in model_names:
             tok = AutoTokenizer.from_pretrained(name)
             lm = AutoModelForCausalLM.from_pretrained(name)
@@ -189,7 +199,7 @@ class LLMDetDetector(BaseDetector):
 
     def predict(self, texts):
         scores = []
-        for text in texts:
+        for text in tqdm(texts, desc="LLMDet"):
             perplexities = []
             for tok, lm in self.models:
                 ppl = self.perplexity(text, tok, lm)
