@@ -1,0 +1,19 @@
+[project]
+name = "ai-text-detector"
+version = "0.1.0"
+description = "AI-generated text detection system based on DeBERTa-v3-large"
+requires-python = ">=3.10"
+dependencies = [
+    "torch>=2.0",
+    "transformers>=4.40",
+    "datasets>=2.18",
+    "accelerate>=0.28",
+    "gradio>=4.0",
+    "scikit-learn>=1.4",
+    "nltk>=3.8",
+    "matplotlib>=3.8",
+    "seaborn>=0.13",
+    "pandas>=2.1",
+    "numpy>=1.26",
+    "huggingface-hub>=0.23",
+]
