@@ -1,40 +1,24 @@
 import torch
 from torch import nn
-from transformers import PreTrainedModel, PretrainedConfig, AutoTokenizer, AutoConfig
-from transformers import DebertaV2Model
-
-
-class AITextDetectorConfig(PretrainedConfig):
-    model_type = "deberta-v2"
-
-    def __init__(self, pretrained_model_name="microsoft/deberta-v3-large", **kwargs):
-        super().__init__(**kwargs)
-        self.pretrained_model_name = pretrained_model_name
+from transformers import PreTrainedModel, AutoConfig, AutoModel, AutoTokenizer
 
 
 class AITextDetector(PreTrainedModel):
-    config_class = AITextDetectorConfig
+    config_class = AutoConfig
 
     def __init__(self, config):
         super().__init__(config)
-        backbone_config = AutoConfig.from_pretrained(config.pretrained_model_name)
-        self.model = DebertaV2Model(backbone_config)
-        self.classifier = nn.Linear(backbone_config.hidden_size, 1)
-        self.post_init()
+        self.model = AutoModel.from_config(config)
+        self.classifier = nn.Linear(config.hidden_size, 1)
+        self.init_weights()
 
-    def forward(self, input_ids, attention_mask=None, token_type_ids=None, **kwargs):
-        outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            token_type_ids=token_type_ids,
-        )
-        hidden_states = outputs.last_hidden_state
+    def forward(self, input_ids, attention_mask=None, **kwargs):
+        hidden_states = self.model(input_ids, attention_mask=attention_mask)[0]
 
-        if attention_mask is not None:
-            mask = attention_mask.unsqueeze(-1).float()
-            pooled = (hidden_states * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1e-9)
-        else:
-            pooled = hidden_states.mean(dim=1)
+        mask = attention_mask.unsqueeze(-1).expand(hidden_states.size()).float()
+        summed = (hidden_states * mask).sum(dim=1)
+        counted = mask.sum(dim=1).clamp(min=1e-9)
+        pooled = summed / counted
 
         logits = self.classifier(pooled).squeeze(-1)
         return logits

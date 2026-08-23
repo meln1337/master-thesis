@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification
 from sklearn.metrics import (
     accuracy_score, f1_score, precision_score, recall_score, roc_auc_score,
 )
@@ -85,40 +85,21 @@ class GLTRDetector(BaseDetector):
 
 class RADARDetector(BaseDetector):
     def __init__(self):
-        from transformers import pipeline
-        dev = get_device()
-        self.paraphrase = pipeline(
-            "text2text-generation",
-            model="Vamsi/T5_Paraphrase_Paws",
-            device=dev,
-        )
-        self.tokenizer = AutoTokenizer.from_pretrained("openai-community/gpt2")
-        self.lm = AutoModelForCausalLM.from_pretrained("openai-community/gpt2")
-        self.lm.eval()
-        self.device = dev
-        self.lm.to(self.device)
-
-    def log_likelihood(self, text):
-        inputs = self.tokenizer(
-            text, return_tensors="pt", truncation=True, max_length=1024,
-        ).to(self.device)
-        with torch.no_grad():
-            outputs = self.lm(**inputs)
-        logits = outputs.logits[:, :-1, :]
-        target_ids = inputs["input_ids"][:, 1:]
-        log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
-        token_log_probs = log_probs.gather(2, target_ids.unsqueeze(-1)).squeeze(-1)
-        return token_log_probs.mean().item()
+        self.tokenizer = AutoTokenizer.from_pretrained("TrustSafeAI/RADAR-Vicuna-7B")
+        self.model = AutoModelForSequenceClassification.from_pretrained("TrustSafeAI/RADAR-Vicuna-7B")
+        self.model.eval()
+        self.device = get_device()
+        self.model.to(self.device)
 
     def predict(self, texts):
         scores = []
         for text in tqdm(texts, desc="RADAR"):
-            original_ll = self.log_likelihood(text)
-            paraphrased = self.paraphrase(
-                f"paraphrase: {text[:512]}", max_length=512, num_return_sequences=1,
-            )[0]["generated_text"]
-            paraphrased_ll = self.log_likelihood(paraphrased)
-            score = 1 / (1 + np.exp(-(original_ll - paraphrased_ll)))
+            inputs = self.tokenizer(
+                text, return_tensors="pt", truncation=True, max_length=512,
+            ).to(self.device)
+            with torch.no_grad():
+                logits = self.model(**inputs).logits
+            score = torch.log_softmax(logits, dim=-1)[:, 0].exp().item()
             scores.append(score)
         return scores
 
@@ -217,10 +198,11 @@ class LLMDetDetector(BaseDetector):
 SHUFFLE_SEED = 42
 
 
-def load_raid_dataset(split="extra", limit=500):
-    ds = load_dataset("liamdugan/raid", split=split).shuffle(seed=SHUFFLE_SEED)
+def load_raid_dataset(split="train", limit=500):
+    ds = load_dataset("liamdugan/raid", split=split, streaming=True)
+    ds = ds.shuffle(seed=SHUFFLE_SEED, buffer_size=10_000)
     texts, labels, sources = [], [], []
-    for row in ds.select(range(min(limit, len(ds)))):
+    for row in ds.take(limit):
         texts.append(row["generation"])
         labels.append(0 if row["model"] == "human" else 1)
         sources.append(row["model"])
