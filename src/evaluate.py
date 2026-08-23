@@ -214,8 +214,11 @@ class LLMDetDetector(BaseDetector):
         return scores
 
 
+SHUFFLE_SEED = 42
+
+
 def load_raid_dataset(split="extra", limit=500):
-    ds = load_dataset("liamdugan/raid", split=split)
+    ds = load_dataset("liamdugan/raid", split=split).shuffle(seed=SHUFFLE_SEED)
     texts, labels, sources = [], [], []
     for row in ds.select(range(min(limit, len(ds)))):
         texts.append(row["generation"])
@@ -225,7 +228,7 @@ def load_raid_dataset(split="extra", limit=500):
 
 
 def load_hc3_dataset(limit=500):
-    ds = load_dataset("Hello-SimpleAI/HC3", "all", split="train")
+    ds = load_dataset("Hello-SimpleAI/HC3", "all", split="train").shuffle(seed=SHUFFLE_SEED)
     texts, labels, sources = [], [], []
     count = 0
     for row in ds:
@@ -249,7 +252,7 @@ def load_hc3_dataset(limit=500):
 
 
 def load_deepfake_dataset(limit=500):
-    ds = load_dataset("yaful/DeepfakeTextDetect", split="test")
+    ds = load_dataset("yaful/DeepfakeTextDetect", split="test").shuffle(seed=SHUFFLE_SEED)
     texts, labels, sources = [], [], []
     for row in ds.select(range(min(limit, len(ds)))):
         texts.append(row["text"])
