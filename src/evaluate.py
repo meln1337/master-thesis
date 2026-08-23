@@ -214,7 +214,7 @@ class LLMDetDetector(BaseDetector):
         return scores
 
 
-def load_raid_dataset(split="test", limit=500):
+def load_raid_dataset(split="extra", limit=500):
     ds = load_dataset("liamdugan/raid", split=split)
     texts, labels, sources = [], [], []
     for row in ds.select(range(min(limit, len(ds)))):
