@@ -9,7 +9,7 @@ from tqdm import tqdm
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification
 from sklearn.metrics import (
-    accuracy_score, f1_score, precision_score, recall_score, roc_auc_score,
+    accuracy_score, f1_score, precision_score, recall_score, roc_auc_score, roc_curve,
 )
 
 from model import load_detector
@@ -105,43 +105,36 @@ class RADARDetector(BaseDetector):
 
 
 class FastDetectGPTDetector(BaseDetector):
-    def __init__(self, num_perturbations=5):
+    def __init__(self):
         self.tokenizer = AutoTokenizer.from_pretrained("openai-community/gpt2")
         self.lm = AutoModelForCausalLM.from_pretrained("openai-community/gpt2")
         self.lm.eval()
         self.device = get_device()
         self.lm.to(self.device)
-        self.num_perturbations = num_perturbations
-
-    def token_log_probs(self, text):
-        inputs = self.tokenizer(
-            text, return_tensors="pt", truncation=True, max_length=1024,
-        ).to(self.device)
-        with torch.no_grad():
-            outputs = self.lm(**inputs)
-        logits = outputs.logits[:, :-1, :]
-        target_ids = inputs["input_ids"][:, 1:]
-        log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
-        token_lp = log_probs.gather(2, target_ids.unsqueeze(-1)).squeeze(-1)
-        return token_lp.squeeze(0), logits.squeeze(0), target_ids.squeeze(0)
 
     def predict(self, texts):
         scores = []
         for text in tqdm(texts, desc="Fast-DetectGPT"):
-            token_lp, logits, target_ids = self.token_log_probs(text)
-            original_mean = token_lp.mean().item()
+            inputs = self.tokenizer(
+                text, return_tensors="pt", truncation=True, max_length=1024,
+            ).to(self.device)
+            with torch.no_grad():
+                logits = self.lm(**inputs).logits[:, :-1, :]
+            target_ids = inputs["input_ids"][:, 1:]
 
-            probs = torch.softmax(logits, dim=-1)
-            perturbed_means = []
-            for _ in range(self.num_perturbations):
-                sampled = torch.multinomial(probs, num_samples=1).squeeze(-1)
-                sampled_text = self.tokenizer.decode(sampled, skip_special_tokens=True)
-                p_lp, _, _ = self.token_log_probs(sampled_text)
-                perturbed_means.append(p_lp.mean().item())
+            log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
+            probs = log_probs.exp()
 
-            mu = np.mean(perturbed_means)
-            sigma = max(np.std(perturbed_means), 1e-10)
-            curvature = (original_mean - mu) / sigma
+            true_token_lp = log_probs.gather(2, target_ids.unsqueeze(-1)).squeeze(-1)
+            analytic_mean = (probs * log_probs).sum(dim=-1)
+            analytic_second_moment = (probs * log_probs.pow(2)).sum(dim=-1)
+            analytic_var = (analytic_second_moment - analytic_mean.pow(2)).clamp(min=1e-10)
+
+            total_logprob = true_token_lp.sum()
+            total_mean = analytic_mean.sum()
+            total_std = analytic_var.sum().sqrt()
+
+            curvature = ((total_logprob - total_mean) / total_std).item()
             score = 1 / (1 + np.exp(-curvature))
             scores.append(score)
         return scores
@@ -279,9 +272,20 @@ def load_deepfake_dataset(limit=500):
     return texts, labels, sources
 
 
-def compute_all_metrics(labels, scores, threshold=0.5):
-    predictions = (np.array(scores) > threshold).astype(int)
+def best_threshold(labels, scores):
+    fpr_vals, tpr_vals, thresholds = roc_curve(labels, scores)
+    best_idx = np.argmax(tpr_vals - fpr_vals)
+    return thresholds[best_idx]
+
+
+def compute_all_metrics(labels, scores, threshold=None):
     labels = np.array(labels)
+    scores = np.array(scores)
+
+    if threshold is None:
+        threshold = best_threshold(labels, scores) if len(set(labels)) > 1 else 0.5
+
+    predictions = (scores > threshold).astype(int)
 
     tp = ((predictions == 1) & (labels == 1)).sum()
     fp = ((predictions == 1) & (labels == 0)).sum()
@@ -289,6 +293,7 @@ def compute_all_metrics(labels, scores, threshold=0.5):
     tn = ((predictions == 0) & (labels == 0)).sum()
 
     return {
+        "threshold": threshold,
         "accuracy": accuracy_score(labels, predictions),
         "f1": f1_score(labels, predictions, zero_division=0),
         "precision": precision_score(labels, predictions, zero_division=0),
@@ -305,6 +310,7 @@ def run_evaluation(detector, detector_name, texts, labels, sources, output_dir):
     scores = detector.predict(texts)
     metrics = compute_all_metrics(labels, scores)
 
+    print(f"  Threshold: {metrics['threshold']:.4f}")
     print(f"  Accuracy: {metrics['accuracy']:.4f}")
     print(f"  F1:       {metrics['f1']:.4f}")
     print(f"  ROC AUC:  {metrics['roc_auc']:.4f}")
