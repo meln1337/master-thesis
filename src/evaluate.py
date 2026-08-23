@@ -226,7 +226,8 @@ def load_raid_dataset(split="train", limit=500):
 
 
 def load_hc3_dataset(limit=500):
-    ds = load_dataset("Hello-SimpleAI/HC3", "all", split="train").shuffle(seed=SHUFFLE_SEED)
+    hc3_parquet = "https://huggingface.co/api/datasets/Hello-SimpleAI/HC3/parquet/all/train/0.parquet"
+    ds = load_dataset("parquet", data_files=hc3_parquet, split="train").shuffle(seed=SHUFFLE_SEED)
     texts, labels, sources = [], [], []
     count = 0
     for row in ds:
