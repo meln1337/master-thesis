@@ -252,12 +252,30 @@ def load_hc3_dataset(limit=500):
 
 
 def load_deepfake_dataset(limit=500):
-    ds = load_dataset("yaful/DeepfakeTextDetect", split="test").shuffle(seed=SHUFFLE_SEED)
+    deepfake_parquet = "https://huggingface.co/datasets/yaful/DeepfakeTextDetect/resolve/refs%2Fconvert%2Fparquet/default/test/0000.parquet"
+    df = pd.read_parquet(deepfake_parquet)
+    df = df.sample(frac=1, random_state=SHUFFLE_SEED).reset_index(drop=True)
+
+    human_target = limit // 2
+    ai_target = limit - human_target
     texts, labels, sources = [], [], []
-    for row in ds.select(range(min(limit, len(ds)))):
-        texts.append(row["text"])
-        labels.append(row["label"])
-        sources.append(row.get("source", "unknown"))
+    human_count, ai_count = 0, 0
+
+    for _, row in df.iterrows():
+        if human_count >= human_target and ai_count >= ai_target:
+            break
+        is_human = "human" in row["src"]
+        if is_human and human_count < human_target:
+            texts.append(row["text"])
+            labels.append(0)
+            sources.append(row["src"])
+            human_count += 1
+        elif not is_human and ai_count < ai_target:
+            texts.append(row["text"])
+            labels.append(1)
+            sources.append(row["src"])
+            ai_count += 1
+
     return texts, labels, sources
 
 
