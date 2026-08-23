@@ -321,57 +321,37 @@ def run_evaluation(detector, detector_name, texts, labels, sources, output_dir):
     return {"metrics": metrics, "scores": scores, "labels": labels, "sources": sources, "texts": texts}
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Evaluate AI text detectors")
-    parser.add_argument("--dataset", default="raid", choices=["raid", "hc3", "deepfake"])
-    parser.add_argument("--limit", type=int, default=500)
-    parser.add_argument("--output_dir", default=RESULTS_DIR)
-    parser.add_argument("--detectors", nargs="+",
-                        default=["ours", "gltr", "radar", "fast_detect_gpt", "llmdet"])
-    args = parser.parse_args()
+DATASET_LOADERS = {
+    "raid": load_raid_dataset,
+    "hc3": load_hc3_dataset,
+    "deepfake": load_deepfake_dataset,
+}
 
-    os.makedirs(args.output_dir, exist_ok=True)
 
-    print(f"Loading dataset: {args.dataset}")
-    if args.dataset == "raid":
-        texts, labels, sources = load_raid_dataset(limit=args.limit)
-    elif args.dataset == "hc3":
-        texts, labels, sources = load_hc3_dataset(limit=args.limit)
-    elif args.dataset == "deepfake":
-        texts, labels, sources = load_deepfake_dataset(limit=args.limit)
-
+def evaluate_dataset(dataset_name, limit, detectors, output_dir):
+    print(f"\nLoading dataset: {dataset_name}")
+    texts, labels, sources = DATASET_LOADERS[dataset_name](limit=limit)
     print(f"Loaded {len(texts)} samples")
 
-    detector_map = {
-        "ours": ("Ours", OurDetector),
-        "gltr": ("GLTR", GLTRDetector),
-        "radar": ("RADAR", RADARDetector),
-        "fast_detect_gpt": ("Fast-DetectGPT", FastDetectGPTDetector),
-        "llmdet": ("LLMDet", LLMDetDetector),
-    }
+    dataset_dir = os.path.join(output_dir, dataset_name)
+    os.makedirs(dataset_dir, exist_ok=True)
 
     all_results = {}
     metrics_rows = []
 
-    for key in args.detectors:
-        if key not in detector_map:
-            print(f"Unknown detector: {key}, skipping")
-            continue
-        name, cls = detector_map[key]
-        detector = cls()
-        result = run_evaluation(detector, name, texts, labels, sources, args.output_dir)
+    for name, detector in detectors.items():
+        result = run_evaluation(detector, name, texts, labels, sources, dataset_dir)
         all_results[name] = result
         row = {"detector": name, **result["metrics"]}
         metrics_rows.append(row)
 
     results_df = pd.DataFrame(metrics_rows)
     print("\n" + "=" * 60)
-    print("RESULTS SUMMARY")
+    print(f"RESULTS SUMMARY — {dataset_name}")
     print("=" * 60)
     print(results_df.to_string(index=False))
-    results_df.to_csv(os.path.join(args.output_dir, "results.csv"), index=False)
+    results_df.to_csv(os.path.join(dataset_dir, "results.csv"), index=False)
 
-    predictions_path = os.path.join(args.output_dir, "predictions.csv")
     pred_rows = []
     for detector_name, result in all_results.items():
         for text, label, source, score in zip(
@@ -384,9 +364,41 @@ def main():
                 "source": source,
                 "score": score,
             })
-    pd.DataFrame(pred_rows).to_csv(predictions_path, index=False)
+    pd.DataFrame(pred_rows).to_csv(os.path.join(dataset_dir, "predictions.csv"), index=False)
 
-    print(f"\nResults saved to {args.output_dir}/")
+    print(f"Results saved to {dataset_dir}/")
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Evaluate AI text detectors")
+    parser.add_argument("--dataset", default="raid", choices=["raid", "hc3", "deepfake", "all"])
+    parser.add_argument("--limit", type=int, default=500)
+    parser.add_argument("--output_dir", default=RESULTS_DIR)
+    parser.add_argument("--detectors", nargs="+",
+                        default=["ours", "gltr", "radar", "fast_detect_gpt", "llmdet"])
+    args = parser.parse_args()
+
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    detector_map = {
+        "ours": ("Ours", OurDetector),
+        "gltr": ("GLTR", GLTRDetector),
+        "radar": ("RADAR", RADARDetector),
+        "fast_detect_gpt": ("Fast-DetectGPT", FastDetectGPTDetector),
+        "llmdet": ("LLMDet", LLMDetDetector),
+    }
+
+    detectors = {}
+    for key in args.detectors:
+        if key not in detector_map:
+            print(f"Unknown detector: {key}, skipping")
+            continue
+        name, cls = detector_map[key]
+        detectors[name] = cls()
+
+    dataset_names = list(DATASET_LOADERS.keys()) if args.dataset == "all" else [args.dataset]
+    for dataset_name in dataset_names:
+        evaluate_dataset(dataset_name, args.limit, detectors, args.output_dir)
 
 
 if __name__ == "__main__":
