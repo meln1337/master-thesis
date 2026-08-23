@@ -10,7 +10,7 @@ class AITextDetector(PreTrainedModel):
         super().__init__(config)
         self.model = AutoModel.from_config(config)
         self.classifier = nn.Linear(config.hidden_size, 1)
-        self.init_weights()
+        self.post_init()
 
     def forward(self, input_ids, attention_mask=None, **kwargs):
         hidden_states = self.model(input_ids, attention_mask=attention_mask)[0]
