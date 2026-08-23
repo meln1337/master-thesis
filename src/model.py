@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from transformers import PreTrainedModel, PretrainedConfig, AutoTokenizer
+from transformers import PreTrainedModel, PretrainedConfig, AutoTokenizer, AutoConfig
 from transformers import DebertaV2Model
 
 
@@ -17,8 +17,9 @@ class AITextDetector(PreTrainedModel):
 
     def __init__(self, config):
         super().__init__(config)
-        self.backbone = DebertaV2Model.from_pretrained(config.pretrained_model_name)
-        self.classifier = nn.Linear(self.backbone.config.hidden_size, 1)
+        backbone_config = AutoConfig.from_pretrained(config.pretrained_model_name)
+        self.backbone = DebertaV2Model(backbone_config)
+        self.classifier = nn.Linear(backbone_config.hidden_size, 1)
 
     def forward(self, input_ids, attention_mask=None, token_type_ids=None, **kwargs):
         outputs = self.backbone(
