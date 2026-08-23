@@ -78,7 +78,7 @@ class GLTRDetector(BaseDetector):
             top100 = (ranks < 100).float().mean().item()
             top1000 = (ranks < 1000).float().mean().item()
 
-            score = 1.0 - (0.5 * top10 + 0.3 * top100 + 0.2 * top1000)
+            score = 0.5 * top10 + 0.3 * top100 + 0.2 * top1000
             scores.append(score)
         return scores
 
