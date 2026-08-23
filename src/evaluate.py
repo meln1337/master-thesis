@@ -201,11 +201,27 @@ SHUFFLE_SEED = 42
 def load_raid_dataset(split="train", limit=500):
     ds = load_dataset("liamdugan/raid", split=split, streaming=True)
     ds = ds.shuffle(seed=SHUFFLE_SEED, buffer_size=10_000)
+
+    human_target = limit // 2
+    ai_target = limit - human_target
     texts, labels, sources = [], [], []
-    for row in ds.take(limit):
-        texts.append(row["generation"])
-        labels.append(0 if row["model"] == "human" else 1)
-        sources.append(row["model"])
+    human_count, ai_count = 0, 0
+
+    for row in ds:
+        if human_count >= human_target and ai_count >= ai_target:
+            break
+        is_human = row["model"] == "human"
+        if is_human and human_count < human_target:
+            texts.append(row["generation"])
+            labels.append(0)
+            sources.append(row["model"])
+            human_count += 1
+        elif not is_human and ai_count < ai_target:
+            texts.append(row["generation"])
+            labels.append(1)
+            sources.append(row["model"])
+            ai_count += 1
+
     return texts, labels, sources
 
 
