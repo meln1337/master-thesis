@@ -18,11 +18,11 @@ class AITextDetector(PreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         backbone_config = AutoConfig.from_pretrained(config.pretrained_model_name)
-        self.backbone = DebertaV2Model(backbone_config)
+        self.model = DebertaV2Model(backbone_config)
         self.classifier = nn.Linear(backbone_config.hidden_size, 1)
 
     def forward(self, input_ids, attention_mask=None, token_type_ids=None, **kwargs):
-        outputs = self.backbone(
+        outputs = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             token_type_ids=token_type_ids,
