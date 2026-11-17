@@ -7,7 +7,10 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from datasets import load_dataset
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification
+from transformers import (
+    AutoTokenizer, AutoModelForCausalLM, AutoModelForSequenceClassification, AutoModel, AutoConfig,
+)
+from safetensors.torch import load_file as load_safetensors
 from sklearn.metrics import (
     accuracy_score, f1_score, precision_score, recall_score, roc_auc_score, roc_curve,
 )
@@ -188,6 +191,60 @@ class LLMDetDetector(BaseDetector):
         return scores
 
 
+# Checkpoints for the internal mAIDetector v2/v2.1/v3 lineage. Proprietary weights, not part of
+# this repo -- kept in a sibling checkout and referenced by absolute path.
+MAI_MODEL_DIRS = {
+    "v2": "/Users/borys.melnychuk/Documents/repos/justdone-ai-detector/models/mAIDetector_v2",
+    "v2.1": "/Users/borys.melnychuk/Documents/repos/justdone-ai-detector/models/mAIDetector_v2.1",
+    "v3": "/Users/borys.melnychuk/Documents/repos/justdone-ai-detector/models/mAIDetector_v3",
+}
+
+
+class MAIDetector(BaseDetector):
+    """Raw mAIDetector v2/v2.1/v3 checkpoint: v3 stores a bare encoder + mean-pooled linear
+    head (state-dict keys prefixed "encoder."), v2/v2.1 are stock
+    AutoModelForSequenceClassification checkpoints with a CLS-token head baked in."""
+
+    def __init__(self, model_dir):
+        self.device = get_device()
+        self.tokenizer = AutoTokenizer.from_pretrained(model_dir)
+        state_dict = load_safetensors(os.path.join(model_dir, "model.safetensors"))
+        self.is_v3 = any(k.startswith("encoder.") for k in state_dict)
+
+        if self.is_v3:
+            config = AutoConfig.from_pretrained(model_dir)
+            encoder_sd = {k[len("encoder."):]: v for k, v in state_dict.items() if k.startswith("encoder.")}
+            self.encoder = AutoModel.from_config(config, attn_implementation="eager")
+            self.encoder.load_state_dict(encoder_sd, strict=True)
+            self.encoder.to(self.device).eval()
+
+            self.head = torch.nn.Linear(config.hidden_size, 2)
+            self.head.weight.data.copy_(state_dict["classifier.weight"])
+            self.head.bias.data.copy_(state_dict["classifier.bias"])
+            self.head.to(self.device)
+        else:
+            self.model = AutoModelForSequenceClassification.from_pretrained(model_dir)
+            self.model.to(self.device).eval()
+
+    def predict(self, texts):
+        scores = []
+        for text in tqdm(texts, desc="mAIDetector"):
+            inputs = self.tokenizer(
+                text, return_tensors="pt", truncation=True, max_length=512,
+            ).to(self.device)
+            with torch.no_grad():
+                if self.is_v3:
+                    hidden = self.encoder(**inputs).last_hidden_state
+                    mask = inputs["attention_mask"].unsqueeze(-1).float()
+                    pooled = (hidden * mask).sum(1) / mask.sum(1).clamp(min=1e-9)
+                    logits = self.head(pooled)
+                else:
+                    logits = self.model(**inputs).logits
+            score = torch.softmax(logits.float(), dim=-1)[:, 1].item()
+            scores.append(score)
+        return scores
+
+
 SHUFFLE_SEED = 42
 
 
@@ -272,6 +329,38 @@ def load_deepfake_dataset(limit=500):
     return texts, labels, sources
 
 
+def load_m4gt_dataset(limit=500):
+    """M4GT-Bench (justdone-org's private HF mirror: text/label/source/model, 6 generators + human)."""
+    from huggingface_hub import hf_hub_download
+    m4gt_parquet = hf_hub_download(
+        repo_id="justdone-org/m4gt", filename="data/train-00000-of-00001.parquet", repo_type="dataset",
+    )
+    df = pd.read_parquet(m4gt_parquet, columns=["text", "label", "model"])
+    df = df.sample(frac=1, random_state=SHUFFLE_SEED).reset_index(drop=True)
+
+    human_target = limit // 2
+    ai_target = limit - human_target
+    texts, labels, sources = [], [], []
+    human_count, ai_count = 0, 0
+
+    for _, row in df.iterrows():
+        if human_count >= human_target and ai_count >= ai_target:
+            break
+        is_human = row["label"] == 0
+        if is_human and human_count < human_target:
+            texts.append(row["text"])
+            labels.append(0)
+            sources.append(row["model"])
+            human_count += 1
+        elif not is_human and ai_count < ai_target:
+            texts.append(row["text"])
+            labels.append(1)
+            sources.append(row["model"])
+            ai_count += 1
+
+    return texts, labels, sources
+
+
 def best_threshold(labels, scores):
     fpr_vals, tpr_vals, thresholds = roc_curve(labels, scores)
     best_idx = np.argmax(tpr_vals - fpr_vals)
@@ -325,6 +414,7 @@ DATASET_LOADERS = {
     "raid": load_raid_dataset,
     "hc3": load_hc3_dataset,
     "deepfake": load_deepfake_dataset,
+    "m4gt": load_m4gt_dataset,
 }
 
 
@@ -350,7 +440,13 @@ def evaluate_dataset(dataset_name, limit, detectors, output_dir):
     print(f"RESULTS SUMMARY — {dataset_name}")
     print("=" * 60)
     print(results_df.to_string(index=False))
-    results_df.to_csv(os.path.join(dataset_dir, "results.csv"), index=False)
+
+    results_path = os.path.join(dataset_dir, "results.csv")
+    if os.path.exists(results_path):
+        prior = pd.read_csv(results_path)
+        prior = prior[~prior["detector"].isin(results_df["detector"])]
+        results_df = pd.concat([prior, results_df], ignore_index=True)
+    results_df.to_csv(results_path, index=False)
 
     pred_rows = []
     for detector_name, result in all_results.items():
@@ -364,14 +460,20 @@ def evaluate_dataset(dataset_name, limit, detectors, output_dir):
                 "source": source,
                 "score": score,
             })
-    pd.DataFrame(pred_rows).to_csv(os.path.join(dataset_dir, "predictions.csv"), index=False)
+    pred_df = pd.DataFrame(pred_rows)
+    preds_path = os.path.join(dataset_dir, "predictions.csv")
+    if os.path.exists(preds_path):
+        prior_preds = pd.read_csv(preds_path)
+        prior_preds = prior_preds[~prior_preds["detector"].isin(pred_df["detector"])]
+        pred_df = pd.concat([prior_preds, pred_df], ignore_index=True)
+    pred_df.to_csv(preds_path, index=False)
 
     print(f"Results saved to {dataset_dir}/")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate AI text detectors")
-    parser.add_argument("--dataset", default="raid", choices=["raid", "hc3", "deepfake", "all"])
+    parser.add_argument("--dataset", default="raid", choices=["raid", "hc3", "deepfake", "m4gt", "all"])
     parser.add_argument("--limit", type=int, default=500)
     parser.add_argument("--output_dir", default=RESULTS_DIR)
     parser.add_argument("--detectors", nargs="+",
@@ -386,6 +488,9 @@ def main():
         "radar": ("RADAR", RADARDetector),
         "fast_detect_gpt": ("Fast-DetectGPT", FastDetectGPTDetector),
         "llmdet": ("LLMDet", LLMDetDetector),
+        "mai_v2": ("mAIDetector-v2", lambda: MAIDetector(MAI_MODEL_DIRS["v2"])),
+        "mai_v2.1": ("mAIDetector-v2.1", lambda: MAIDetector(MAI_MODEL_DIRS["v2.1"])),
+        "mai_v3": ("mAIDetector-v3", lambda: MAIDetector(MAI_MODEL_DIRS["v3"])),
     }
 
     detectors = {}
